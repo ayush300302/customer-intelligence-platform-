@@ -43,6 +43,85 @@ customer-intelligence-platform/
 └── deploy_azure.ps1             # PowerShell script for Azure Container Apps
 ```
 
+## System Architecture & High-Level Design
+
+The system is decoupled into modular layers to prevent train-serving skew and promote operational scalability:
+
+```mermaid
+graph TD
+    %% Subgraphs
+    subgraph Client Layer
+        client[API Client / Frontend]
+    end
+
+    subgraph Serving Spine [FastAPI app]
+        app[serve.py]
+        schemas[schemas.py]
+        loader[model_loader.py]
+    end
+
+    subgraph Registry [Registry / Artifact Store]
+        mlflow_runs[MLflow tracking]
+        promoted_ml[promoted_model.pkl]
+        pipeline_bin[pipeline.pkl]
+        metadata_json[model_metadata.json]
+        faiss_index[complaints_index.faiss]
+        meta_json[complaints_metadata.json]
+    end
+
+    subgraph ML_Lane [ML Model Lane]
+        ingest_ml[ingest.py] --> validate_ml[validate.py]
+        validate_ml --> features_ml[features.py]
+        features_ml --> train_ml[train.py]
+        train_ml --> evaluate_ml[evaluate.py]
+        evaluate_ml --> gate{Relative Gate}
+    end
+
+    subgraph RAG_Lane [LLM RAG Lane]
+        ingest_rag[ingest.py] --> build_index[build_index.py]
+        build_index --> vector_gen[SentenceTransformer]
+    end
+
+    subgraph Operations [Operations & Telemetry]
+        ml_drift[ml_drift.py] -->|Evidently AI| drift_html[ml_drift_report.html]
+        rag_mon[rag_monitor.py]
+    end
+
+    %% Data Flow
+    client -->|POST /predict| app
+    client -->|POST /ask-complaints| app
+    client -->|POST /customer-intel| app
+    client -->|GET /metrics| app
+
+    app --> loader
+    app --> schemas
+
+    loader -->|Loads| promoted_ml
+    loader -->|Loads| pipeline_bin
+    loader -->|Loads| metadata_json
+    loader -->|Loads| faiss_index
+    loader -->|Loads| meta_json
+
+    gate -->|Promote Baseline / Challenger| promoted_ml
+    gate -->|Promote Pipeline| pipeline_bin
+    gate -->|Write Decision| metadata_json
+
+    vector_gen -->|Save FAISS Index| faiss_index
+    vector_gen -->|Save Docs Mapping| meta_json
+
+    app -.->|Telemetry logs| ml_drift
+    app -.->|Telemetry logs| rag_mon
+```
+
+### Component Details
+1. **Data Pipeline Component (`src/data_pipeline/`)**: Handles programmatic ingestion of Bank Marketing and CFPB complaints. Schema validator checks rules and category encoding standardizes maps to prevent train-serving skew.
+2. **ML Model Lane (`src/training/`)**: Trains baseline (Logistic Regression) and challenger (Random Forest) models. Runs a relative promotion gate requiring PR-AUC to improve by $\ge 2\%$ and F1 drop to be $\le 1\%$, registering the promoted model.
+3. **LLM RAG Lane (`src/rag/`)**: Encodes cleaned narratives locally using `SentenceTransformer` (`all-MiniLM-L6-v2`) and indexes them using `FAISS`. Implements metadata post-filtering and refusal logic if similarity falls below `0.35`.
+4. **FastAPI Serving Layer (`src/serving/`)**: Unified FastAPI spine with request/response validation (Pydantic) and model loader caching.
+5. **Drift & Telemetry (`monitoring/`)**: Statistical data drift checking via **Evidently AI** and live metrics tracking.
+
+---
+
 ## Setup & Running
 
 ### 1. Prerequisites
