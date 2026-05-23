@@ -1,0 +1,57 @@
+{
+    "model_version": "1.0.0",
+    "model_type": "baseline_logistic_regression",
+    "training_date": "2026-05-24 00:57:56",
+    "dataset_hash": "74adfc578bf77a7ff4bb1ba4a9f8709d9e3c6907342959c2c8416847e0afb4d8",
+    "gate_evaluation": {
+        "pr_auc_difference": 0.05068907108422438,
+        "f1_drop": 0.07109487284376492,
+        "pr_auc_gate_passed": true,
+        "f1_gate_passed": false,
+        "is_challenger_promoted": false
+    },
+    "metrics": {
+        "baseline": {
+            "roc_auc": 0.9423799471673191,
+            "pr_auc": 0.6349495231222932,
+            "f1": 0.5403602401601068,
+            "accuracy": 0.9163631949502307,
+            "brier_score": 0.059886747979826245,
+            "confusion_matrix": {
+                "tn": 7144,
+                "fp": 166,
+                "fn": 523,
+                "tp": 405
+            },
+            "opt_threshold": 0.24261522359863025
+        },
+        "challenger": {
+            "roc_auc": 0.9473520272182651,
+            "pr_auc": 0.6856385942065176,
+            "f1": 0.46926536731634183,
+            "accuracy": 0.9140568099053168,
+            "brier_score": 0.05619930969097091,
+            "confusion_matrix": {
+                "tn": 7217,
+                "fp": 93,
+                "fn": 615,
+                "tp": 313
+            },
+            "opt_threshold": 0.31455735288203635
+        },
+        "promoted": {
+            "roc_auc": 0.9423799471673191,
+            "pr_auc": 0.6349495231222932,
+            "f1": 0.5403602401601068,
+            "accuracy": 0.9163631949502307,
+            "brier_score": 0.059886747979826245,
+            "confusion_matrix": {
+                "tn": 7144,
+                "fp": 166,
+                "fn": 523,
+                "tp": 405
+            },
+            "opt_threshold": 0.24261522359863025
+        }
+    }
+}
