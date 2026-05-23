@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+data/*.csv
+data/*.zip
+models/candidate_baseline.pkl
+models/candidate_challenger.pkl
+models/candidate_pipeline.pkl
+models/mlruns/
+.pytest_cache/
+.ipynb_checkpoints/
