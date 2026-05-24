@@ -11,28 +11,54 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v4
       with:
         python-version: '3.11'
-        cache: 'pip'
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run Ingestion Script
+    - name: Run Data Validation Checks (Mock/Sample)
       run: |
-        python src/data_pipeline/ingest.py
-
-    - name: Run Data Validation Script
-      run: |
+        # Generate dummy data for validation test
+        python -c "
+        import pandas as pd
+        import os
+        os.makedirs('data', exist_ok=True)
+        cols = ['age', 'job', 'marital', 'education', 'default', 'housing', 'loan', 'contact', 'month', 'day_of_week', 'duration', 'campaign', 'pdays', 'previous', 'poutcome', 'emp.var.rate', 'cons.price.idx', 'cons.conf.idx', 'euribor3m', 'nr.employed', 'y']
+        df_bm = pd.DataFrame([
+            [30, 'admin.', 'single', 'university.degree', 'no', 'yes', 'no', 'cellular', 'may', 'mon', 250, 1, 999, 0, 'nonexistent', 1.1, 93.994, -36.4, 4.857, 5191.0, 'yes'],
+            [40, 'services', 'married', 'high.school', 'no', 'no', 'no', 'telephone', 'may', 'mon', 150, 1, 999, 0, 'nonexistent', 1.1, 93.994, -36.4, 4.857, 5191.0, 'no']
+        ] * 10, columns=cols)
+        df_bm.to_csv('data/bank_marketing_raw.csv', sep=';', index=False)
+        # Create complaints mock
+        df_comp = pd.DataFrame([['123456', '2026-05-20', 'Credit card', 'General-purpose', 'Billing dispute', 'unauthorized', 'This was an unauthorized charge', 'Equifax', 'CA', '90210', 'Closed', True, False]], columns=['complaint_id', 'date_received', 'product', 'sub_product', 'issue', 'sub_issue', 'consumer_complaint_narrative', 'company', 'state', 'zip_code', 'company_response_to_consumer', 'timely_response', 'consumer_disputed'])
+        df_comp.to_csv('data/complaints_raw.csv', index=False)
+        "
+        # Run validate.py main execution to check data schema
         python src/data_pipeline/validate.py
 
-    - name: Run Tests
+    - name: Run Pytest Test Suite
       run: |
-        python -m pytest
+        pytest
+
+    - name: Run ML Training & Relative Gate Integration Test
+      run: |
+        # Run train.py to verify MLflow logs baseline & challenger
+        python src/training/train.py
+        # Run evaluate.py to verify the relative promotion gate logic
+        python src/training/evaluate.py

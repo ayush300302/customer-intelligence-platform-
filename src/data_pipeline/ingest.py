@@ -1,78 +1,171 @@
 import os
-import requests
 import zipfile
+import requests
+import json
 import pandas as pd
-from io import BytesIO
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
+import urllib3
+# Disable SSL verification warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def download_uci_bank_marketing():
-    print("Downloading UCI Bank Marketing Data...")
-    # Using the direct zip url from UCI
-    url = "https://archive.ics.uci.edu/static/public/222/bank+marketing.zip"
-    response = requests.get(url, verify=False)
+# Define paths
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
+os.makedirs(DATA_DIR, exist_ok=True)
+
+UCI_ZIP_URL = "https://archive.ics.uci.edu/static/public/222/bank+marketing.zip"
+CFPB_API_URL = "https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1/?has_narrative=true&size=5000&format=json"
+
+BANK_MARKETING_ZIP = os.path.join(DATA_DIR, "bank_marketing.zip")
+BANK_MARKETING_CSV = os.path.join(DATA_DIR, "bank_marketing_raw.csv")
+COMPLAINTS_CSV = os.path.join(DATA_DIR, "complaints_raw.csv")
+
+def download_bank_marketing():
+    if os.path.exists(BANK_MARKETING_CSV):
+        print(f"UCI Bank Marketing dataset raw file already exists at {BANK_MARKETING_CSV}. Skipping download.")
+        return
+    print("Downloading UCI Bank Marketing dataset...")
+    response = requests.get(UCI_ZIP_URL, stream=True, verify=False)
     if response.status_code == 200:
-        with zipfile.ZipFile(BytesIO(response.content)) as z:
-            z.extractall(DATA_DIR)
+        with open(BANK_MARKETING_ZIP, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print("Downloaded UCI Bank Marketing zip.")
+    else:
+        raise Exception(f"Failed to download UCI dataset: HTTP {response.status_code}")
+
+    print("Extracting bank-additional-full.csv...")
+    with zipfile.ZipFile(BANK_MARKETING_ZIP, 'r') as zip_ref:
+        # The UCI zip file contains another zip file: bank-additional.zip. Let's see if that's true.
+        # Let's list files in the zip to find the exact structure.
+        namelist = zip_ref.namelist()
+        print(f"Zip contents: {namelist}")
         
-        # The zip contains another zip `bank.zip` or `bank-additional.zip`
-        # Let's check what was extracted
-        print("Files extracted:", os.listdir(DATA_DIR))
-        # The actual CSVs are in bank-additional.zip inside the main zip usually
-        bank_additional_zip_path = os.path.join(DATA_DIR, "bank-additional.zip")
-        if os.path.exists(bank_additional_zip_path):
-            with zipfile.ZipFile(bank_additional_zip_path) as z2:
-                z2.extractall(DATA_DIR)
-            print("Extracted bank-additional.zip")
+        # Check if 'bank-additional.zip' is inside
+        if "bank-additional.zip" in namelist:
+            zip_ref.extract("bank-additional.zip", path=DATA_DIR)
+            nested_zip_path = os.path.join(DATA_DIR, "bank-additional.zip")
+            with zipfile.ZipFile(nested_zip_path, 'r') as nested_ref:
+                nested_namelist = nested_ref.namelist()
+                print(f"Nested zip contents: {nested_namelist}")
+                # We want 'bank-additional/bank-additional-full.csv'
+                full_csv_path = [name for name in nested_namelist if "bank-additional-full.csv" in name]
+                if full_csv_path:
+                    nested_ref.extract(full_csv_path[0], path=DATA_DIR)
+                    # Move file to final location
+                    extracted_file = os.path.join(DATA_DIR, full_csv_path[0])
+                    if os.path.exists(BANK_MARKETING_CSV):
+                        os.remove(BANK_MARKETING_CSV)
+                    os.rename(extracted_file, BANK_MARKETING_CSV)
+                    print(f"Extracted to {BANK_MARKETING_CSV}")
+                else:
+                    raise Exception("bank-additional-full.csv not found in nested zip.")
+            # Clean up nested zip
+            os.remove(nested_zip_path)
+        else:
+            # Maybe the zip has bank-additional-full.csv directly
+            full_csv_path = [name for name in namelist if "bank-additional-full.csv" in name]
+            if full_csv_path:
+                zip_ref.extract(full_csv_path[0], path=DATA_DIR)
+                extracted_file = os.path.join(DATA_DIR, full_csv_path[0])
+                if os.path.exists(BANK_MARKETING_CSV):
+                    os.remove(BANK_MARKETING_CSV)
+                os.rename(extracted_file, BANK_MARKETING_CSV)
+                print(f"Extracted to {BANK_MARKETING_CSV}")
+            else:
+                raise Exception("bank-additional-full.csv not found in zip.")
+
+    # Clean up original zip
+    os.remove(BANK_MARKETING_ZIP)
+    # Remove directory if created
+    nested_dir = os.path.join(DATA_DIR, "bank-additional")
+    if os.path.exists(nested_dir) and os.path.isdir(nested_dir):
+        import shutil
+        shutil.rmtree(nested_dir)
+
+def download_cfpb_complaints():
+    print("Downloading CFPB complaints narratives sample in pages...")
+    records = []
+    page_size = 1000
+    target_records = 5000
+    
+    for start in range(0, target_records, page_size):
+        url = f"https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1/?has_narrative=true&size={page_size}&frm={start}&format=json"
+        print(f"Fetching page starting at {start}...")
+        try:
+            response = requests.get(url, verify=False, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                hits_list = data.get("hits", {}).get("hits", [])
+                if not hits_list:
+                    print("No more records returned from CFPB API.")
+                    break
+                for hit in hits_list:
+                    source = hit.get("_source", {})
+                    records.append({
+                        "complaint_id": source.get("complaint_id"),
+                        "date_received": source.get("date_received"),
+                        "product": source.get("product"),
+                        "sub_product": source.get("sub_product"),
+                        "issue": source.get("issue"),
+                        "sub_issue": source.get("sub_issue"),
+                        "consumer_complaint_narrative": source.get("consumer_complaint_narrative"),
+                        "company": source.get("company"),
+                        "state": source.get("state"),
+                        "zip_code": source.get("zip_code"),
+                        "company_response_to_consumer": source.get("company_response_to_consumer"),
+                        "timely_response": source.get("timely_response"),
+                        "consumer_disputed": source.get("consumer_disputed")
+                    })
+                print(f"Retrieved {len(hits_list)} records. Total: {len(records)}")
+            else:
+                print(f"Warning: Failed to fetch page starting at {start}: HTTP {response.status_code}")
+                break
+        except Exception as e:
+            print(f"Warning: Exception occurred during fetch: {str(e)}")
+            break
+
+    if not records:
+        print("Warning: No records retrieved from CFPB API. Generating a mock dataset for offline usage.")
+        mock_records = []
+        companies = ["Equifax", "Citibank", "Wells Fargo", "Bank of America", "Navient", "Capital One", "Experian", "Chase", "Citibank", "Equifax"]
+        products = ["Credit reporting", "Credit card", "Mortgage", "Bank account", "Student loan", "Credit card", "Credit reporting", "Debt collection", "Vehicle loan", "Prepaid card"]
+        issues = ["Incorrect information on credit report", "Billing dispute", "Loan modification delay", "Unauthorized transaction", "Student loan billing", "Identity theft", "Incorrect information on file", "Debt collection issues", "Auto loan title delay", "Prepaid card freeze"]
+        narratives = [
+            "There are major errors on my Equifax credit report. The account status is wrong.",
+            "I contacted Citibank to dispute a billing charge on my credit card, but they refused to help.",
+            "Wells Fargo mortgage department has been delaying my loan modification request for months.",
+            "I noticed unauthorized transactions and debit card withdrawals on my Bank of America account.",
+            "Navient has misapplied my student loan payments across accounts, leading to late fees.",
+            "My Capital One card was compromised. I was a victim of identity theft and they blocked my access.",
+            "Experian has incorrect information on my file. Accounts that do not belong to me are showing.",
+            "A debt collector from Chase is calling me excessively regarding credit card debt.",
+            "Chase has delayed releasing the title for my auto loan after I paid it off completely.",
+            "My prepaid card was frozen suddenly by the provider, and I cannot access my funds."
+        ]
+        for i in range(100):
+            idx = i % 10
+            mock_records.append({
+                "complaint_id": str(1000000 + i),
+                "date_received": "2026-05-20",
+                "product": products[idx],
+                "sub_product": "General",
+                "issue": issues[idx],
+                "sub_issue": "General",
+                "consumer_complaint_narrative": narratives[idx],
+                "company": companies[idx],
+                "state": "CA",
+                "zip_code": "90210",
+                "company_response_to_consumer": "Closed with explanation",
+                "timely_response": True,
+                "consumer_disputed": False
+            })
+        df = pd.DataFrame(mock_records)
     else:
-        print("Failed to download UCI data")
-
-def download_cfpb_complaints(sample_size=10000):
-    print("Downloading CFPB Consumer Complaints Sample...")
-    # Endpoint: https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1/
-    url = f"https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1/?size={sample_size}"
-    try:
-        response = requests.get(url, verify=False)
-        status_code = response.status_code
-    except Exception as e:
-        print(f"Request failed: {e}")
-        status_code = 0
-
-    if status_code == 200:
-        data = response.json().get('hits', {}).get('hits', [])
-        # Extract the _source dictionary for each complaint
-        records = [hit['_source'] for hit in data]
         df = pd.DataFrame(records)
-        output_path = os.path.join(DATA_DIR, "complaints_sample.csv")
-        df.to_csv(output_path, index=False)
-        print(f"Saved {len(df)} complaints to {output_path}")
-    else:
-        print(f"Failed to download CFPB data (status: {status_code}). Generating mock complaints data fallback...")
-        # Generate mock data that conforms to the validation schema
-        mock_data = [
-            {
-                "product": "Credit card or prepaid card",
-                "issue": "Incorrect information on your report",
-                "company": "EQUIFAX, INC.",
-                "date_received": "2026-05-24",
-                "complaint_what_happened": "This is a mock complaint narrative about an incorrect credit report entry.",
-                "complaint_id": "1234567"
-            },
-            {
-                "product": "Mortgage",
-                "issue": "Trouble during payment process",
-                "company": "WELLS FARGO & COMPANY",
-                "date_received": "2026-05-24",
-                "complaint_what_happened": "This is a mock complaint narrative about trouble making a mortgage payment online.",
-                "complaint_id": "2345678"
-            }
-        ] * (sample_size // 2)
-        df = pd.DataFrame(mock_data)
-        output_path = os.path.join(DATA_DIR, "complaints_sample.csv")
-        df.to_csv(output_path, index=False)
-        print(f"Saved {len(df)} mock complaints to {output_path}")
+
+    df.to_csv(COMPLAINTS_CSV, index=False)
+    print(f"Saved {len(df)} CFPB complaints to {COMPLAINTS_CSV}")
 
 if __name__ == "__main__":
-    os.makedirs(DATA_DIR, exist_ok=True)
-    download_uci_bank_marketing()
-    download_cfpb_complaints(10000)
+    download_bank_marketing()
+    download_cfpb_complaints()
