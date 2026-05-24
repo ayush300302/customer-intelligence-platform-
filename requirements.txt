@@ -1,0 +1,13 @@
+pandas
+scikit-learn
+fastapi
+uvicorn
+mlflow
+sentence-transformers
+faiss-cpu
+chromadb
+pytest
+pandera
+evidently
+shap
+requests
