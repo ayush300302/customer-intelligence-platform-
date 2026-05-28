@@ -11,3 +11,5 @@ models/candidate_pipeline.pkl
 models/mlruns/
 .pytest_cache/
 .ipynb_checkpoints/
+*.zip
+docs/*.html
