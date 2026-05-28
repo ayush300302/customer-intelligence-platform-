@@ -1,11 +1,36 @@
 # deploy_azure.ps1
 # PowerShell Deployment Script for deploying Customer Intelligence Platform to Azure Container Apps.
 
-$resourceGroup = "rg-customer-intel"
-$location = "eastus"
+param(
+    [string]$geminiApiKey = ""
+)
+
+$resourceGroup = "rg-customer-intel-ci"
+$location = "centralindia"
 $acrName = "acrcustomerintel" + (Get-Random -Minimum 1000 -Maximum 9999)
 $containerAppName = "ca-customer-intel"
 $containerAppEnvName = "env-customer-intel"
+
+# Resolve GEMINI_API_KEY
+if ([string]::IsNullOrEmpty($geminiApiKey)) {
+    if ($env:GEMINI_API_KEY) {
+        $geminiApiKey = $env:GEMINI_API_KEY
+    } elseif (Test-Path ".env") {
+        # Parse .env file for GEMINI_API_KEY
+        Select-String -Path ".env" -Pattern "^\s*GEMINI_API_KEY\s*=\s*(.*)" | ForEach-Object {
+            $val = $_.Matches.Groups[1].Value.Trim()
+            # Strip potential surrounding quotes
+            $val = $val -replace "^['`"]", "" -replace "['`"]$", ""
+            if (-not [string]::IsNullOrEmpty($val)) {
+                $geminiApiKey = $val
+            }
+        }
+    }
+}
+
+if ([string]::IsNullOrEmpty($geminiApiKey)) {
+    $geminiApiKey = Read-Host -Prompt "Enter your GEMINI_API_KEY (required for production RAG)"
+}
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "   Customer Intelligence Platform - Azure Deployment Script" -ForegroundColor Cyan
@@ -23,9 +48,23 @@ if (-not (Get-Command "az" -ErrorAction SilentlyContinue)) {
 }
 
 # 2. Login to Azure
-Write-Host "`n[Step 2/6] Logging in to Azure..." -ForegroundColor Yellow
-Write-Host "A browser window will open. Please authenticate with your Azure account." -ForegroundColor Cyan
-az login
+Write-Host "`n[Step 2/6] Checking Azure login status..." -ForegroundColor Yellow
+$loggedIn = $false
+try {
+    # Check if there is an active logged-in account
+    $account = az account show --query "name" -o tsv 2>$null
+    if ($account) {
+        Write-Host "Already logged in to Azure account: $account" -ForegroundColor Green
+        $loggedIn = $true
+    }
+} catch {
+    # Not logged in or az CLI error
+}
+
+if (-not $loggedIn) {
+    Write-Host "No active session found. A browser window will open. Please authenticate with your Azure account." -ForegroundColor Cyan
+    az login
+}
 
 # 3. Create Resource Group
 Write-Host "`n[Step 3/6] Creating Resource Group: $resourceGroup in $location..." -ForegroundColor Yellow
@@ -47,7 +86,15 @@ Write-Host "`n[Step 5/6] Building and pushing Docker image to ACR..." -Foregroun
 Write-Host "Docker Target: $imageTag" -ForegroundColor Cyan
 
 # Check if Docker Desktop/daemon is running
-if (-not (Get-Service "docker" -ErrorAction SilentlyContinue) -and -not (Get-Command "docker" -ErrorAction SilentlyContinue)) {
+$dockerRunning = $false
+if (Get-Command "docker" -ErrorAction SilentlyContinue) {
+    & docker info >$null 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $dockerRunning = $true
+    }
+}
+
+if (-not $dockerRunning) {
     Write-Host "Docker daemon is not running or Docker CLI is missing." -ForegroundColor Red
     Write-Host "Bypassing local docker build, using ACR task for remote building..." -ForegroundColor Yellow
     # Trigger remote build inside ACR (doesn't require local Docker!)
@@ -86,7 +133,7 @@ az containerapp create `
   --registry-server $loginServer `
   --registry-username $registryUsername `
   --registry-password $registryPassword `
-  --env-vars "GEMINI_API_KEY=your_gemini_api_key_here"
+  --env-vars "GEMINI_API_KEY=$geminiApiKey" "APP_ENV=production"
 
 # Get URL
 $fqdn = (az containerapp show --name $containerAppName --resource-group $resourceGroup --query "properties.configuration.ingress.fqdn" --output tsv)
